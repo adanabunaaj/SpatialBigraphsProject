@@ -1,49 +1,140 @@
 import json
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Rectangle
+from itertools import cycle
 
-# 1) Load your bigraph JSON
-with open("RoomBigraph17.json", "r") as f:
-    data = json.load(f)
-room = data["Rooms"][0]["room1"]
+def plot_room(file_path, room_name = None):
+    """
+    Plot the floorplan of a room (walls, doors, windows, furniture, IoT devices).
+    
+    Args:
+      file_path (str): Path to the JSON file.
+      room_name (str, optional): Name of the room to plot. 
+                                 If None, we’ll use the single room in the file.
+    """
 
-# 2) Gather (x,z) by category — replace "location"→"corner" if your JSON uses that
-pts = {}
-for cat in ["walls", "doors", "windows"]: #//TODO#add windows later 
-    pts[cat] = [(it["location"]["x"], it["location"]["z"])
-                for it in room[cat]]
-for cat, items in room.get("furniture", {}).items():
-    pts[cat] = [(it["location"]["x"], it["location"]["z"])
-                for it in items]
+    # 1) Load JSON & find the room
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    
+    rooms_dict = data['Rooms'][0]
+    if room_name is None:
+        room_name, room = next(iter(rooms_dict.items()))
+    else:
+        room = rooms_dict[room_name]
+        
+    # 2) Extract wall points to get the bounding box
+    wall_pts = np.array([
+        (wall['location']['x'], wall['location']['z']) for wall in room.get('walls', [])
+    ])
+    xmin, xmax = wall_pts[:,0].min(), wall_pts[:,0].max()
+    zmin, zmax = wall_pts[:,1].min(), wall_pts[:,1].max()
+    
+    # 3) Build door/window segments on the boundary
+    door_segs = []
+    tol = 1e-3 #this is a tolerance threashhold since floats are not exact
+    for kind in ('doors','windows'):
+        for item in room.get(kind, []):
+            x = item['location']['x']
+            z = item['location']['z']
+            W = item['dimensions'].get('width', 0)
+            L = item['dimensions'].get('length', 0)
 
-# 3) Compute the axis-aligned bounding box of wall points
-wall_pts = np.array(pts["walls"])
-xmin, xmax = wall_pts[:,0].min(), wall_pts[:,0].max()
-zmin, zmax = wall_pts[:,1].min(), wall_pts[:,1].max()
+            # Determine which wall the segment falls on
+            if abs(z - zmax) < tol:
+                #Top Wall - horizontal segment
+                x1, x2 = x, x + W
+                z1 = z2 = zmax
+            elif abs(z - zmin) < tol:
+                #Bottom Wall - horizontal segment
+                x1, x2 = x, x + W
+                z1 = z2 = zmin
+            elif abs(x - xmin) < tol:
+                #Left Wall - vertical segment
+                x1 = x2 = xmin
+                z1, z2 = z, z - W
+            elif abs(x - xmax) < tol:
+                #Right Wall - vertical segment
+                x1 = x2 = xmax
+                z1, z2 = z, z - W
+            else:
+            #Not on a wall 
+                if W > 0:
+                    x1, x2 = x, x + W
+                    z1 = z2 = z
+                else:
+                    x1 = x2 = x
+                    z1, z2 = z, z + L
+            door_segs.append((x1, z1, x2, z2, kind))
+    
+    # 4) Gather all objects as rectangles
+    rects = [] # list of (x_center, z_center, length, width, category)
+    categories = set()
+    for category, items in room.get('objects', {}).items():
+        for it in items:
+            x = it['location']['x']
+            z = it['location']['z']
+            L = it['dimensions']['length']
+            W = it['dimensions']['width']
+            cat = it.get('category', category)
+            rects.append((x, z, L, W, cat))
+            categories.add(cat)
+    
+    # 5) Gather IoT devices as points
+    iots = []
+    for dev in room.get('iot_devices', []):
+        if dev.get('room') == room_name:
+            x = dev['position']['x']
+            z = dev['position']['z']
+            name = dev.get('name','IoT')
+            iots.append((x, z, name))
+    
+    # 6) Color each category and IoT device differently
+    base = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    cc = cycle(base)
+    cat_color = {c: next(cc) for c in sorted(categories)}
+    dw_color  = next(cc)
+    iot_color = {nm: next(cc) for *_, nm in iots}
+    
+    # 7) Plotting
+    fig, ax = plt.subplots(figsize=(8,8))
+    
+    # 7a) Room boundary
+    rect_x = [xmin, xmin, xmax, xmax, xmin]
+    rect_z = [zmin, zmax, zmax, zmin, zmin]
+    ax.plot(rect_x, rect_z, 'k-', lw=2, label='wall')
+    
+    # 7b) Doors/windows on boundary
+    for x1, z1, x2, z2, kind in door_segs:
+        ax.plot([x1,x2],[z1,z2], lw=2, color=dw_color,
+                label=kind if kind not in ax.get_legend_handles_labels()[1] else "")
+    
+    # 7c) Object rectangles
+    for x, z, L, W, cat in rects:
+        blx, blz = x - L/2, z - W/2
+        rect = Rectangle((blx,blz), L, W,
+                         edgecolor=cat_color[cat], facecolor='none', lw=1.5,
+                         label=cat if cat not in ax.get_legend_handles_labels()[1] else "")
+        ax.add_patch(rect)
+        ax.text(x, z, cat, fontsize=7, ha='center', va='center', color=cat_color[cat])
+    
+    # 7d) IoT points
+    for x, z, name in iots:
+        c = iot_color[name]
+        ax.scatter(x, z, marker='x', s=80, color=c,
+                   label=name if name not in ax.get_legend_handles_labels()[1] else "")
+        ax.text(x, z, name, fontsize=7, ha='left', va='bottom', color=c)
+    
+    # 8) Finalize
+    ax.set_aspect('equal', 'box')
+    ax.set_xlabel('x (m)')
+    ax.set_ylabel('z (m)')
+    ax.set_title(f"Room '{room_name}' — boundary + flush doors/windows")
+    ax.legend(loc='upper right', fontsize=8)
+    plt.tight_layout()
+    plt.show()
 
-# 4) Define the rectangle corners (close the loop back to start)
-rect_x = [xmin, xmin, xmax, xmax, xmin]
-rect_z = [zmin, zmax, zmax, zmin, zmin]
-
-# 5) Plot
-plt.figure(figsize=(8,8))
-
-# 5a) Draw room outline
-plt.plot(rect_x, rect_z, 'k-', lw=2, label="Room boundary")
-
-# 5b) Scatter + annotate every point
-for cat, coords in pts.items():
-    if not coords: continue
-    xs, zs = zip(*coords)
-    plt.scatter(xs, zs, label=cat, s=40)
-    for x, z in coords:
-        plt.text(x, z, f"({x:.2f}, {z:.2f})",
-                 fontsize=7, ha='right', va='bottom')
-
-# 6) Tidy up
-plt.gca().set_aspect('equal', 'box')
-plt.xlabel("x (m)")
-plt.ylabel("z (m)")
-plt.title("Plan‐view: room outline + points w/ coords")
-plt.legend(loc="upper right")
-plt.show()
+if __name__ == '__main__':
+    room_name = None # Adjust this to plot a specific room
+    plot_room('Jsons/room_2_with_iot.json', room_name) #Ajust the path as needed

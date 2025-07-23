@@ -4,14 +4,27 @@ from networkx.drawing.nx_pydot import graphviz_layout
 import matplotlib.pyplot as plt
 import numpy as np 
 
-#Helping Functions: 
+# ─── Geometry Helpers ────────────────────────────────────────────────────────
+
+def to_vec(point):
+    """
+    Convert a dict with keys 'x','y','z' into a NumPy array [x,y,z].
+    """
+    return np.array([point["x"], point["y"], point["z"]])
 
 def point_to_plane_dist(point, plane_point, plane_normal):
-    """Unsigned distance from pt to infinite plaen"""
+    """
+    Compute the unsigned perpendicular distance from `point` to the infinite plane
+    defined by `plane_point` (any point on the plane) and `plane_normal`.
+    """
     return abs(np.dot(plane_normal, point - plane_point))
 
+
 def point_to_aabb_dist(point, aabb_min, aabb_max):
-    """" Distance from point to axis-aligned bounding box"""""
+    """
+    Compute the shortest distance from `point` to an axis-aligned bounding box
+    defined by `aabb_min` and `aabb_max`.
+    """
     dx = max(aabb_min[0] - point[0], 0, point[0] - aabb_max[0])
     dy = max(aabb_min[1] - point[1], 0, point[1] - aabb_max[1])
     dz = max(aabb_min[2] - point[2], 0, point[2] - aabb_max[2])
@@ -19,40 +32,65 @@ def point_to_aabb_dist(point, aabb_min, aabb_max):
 
 def build_surfaces(objects, walls_ids, door_ids, window_ids):
     """
-    Convert each object into a tuple: 
-    ("plane",   obj_dict, point_on_plane, normal)
-    ("box",     obj_dict, aabb_min,       aabb_max)
-    We identify planes by id membership in walls/doors/windows.
+    For each object, produce either:
+      - ("plane", obj, plane_point, normal)  for walls/doors/windows
+      - ("box",   obj, aabb_min, aabb_max)   for everything else
+
+    *Walls/doors/windows* JSON give you a *corner* location + dimensions:
+      we compute the face-centroid = corner + ½(extents) to use as plane_point.
+
+    *Other objects* JSON `location` is already their centroid – so we
+    build an AABB centered there.
     """
+    
     surfaces = []
     for obj in objects: 
-        pos = to_vec(obj.get('location', obj.get("position")))
         dims = obj.get("dimensions", {})
+        
+        # Does this object live in walls/doors/windows?
+        is_plane = obj["id"] in (walls_ids + door_ids + window_ids)
+        loc_raw  = obj.get("location") or obj.get("position")
 
-        #Walls/doors/windows --> infinite planes
-        if obj["id"] in walls_ids + door_ids + window_ids:
-            #assume the zero-length dimension axis is the normal
-            #e.g. walls have length==0 --> normal along local z
-            #you may need to adjust axis mapping
-            if dims.get("length",1) == 0:
+        if is_plane:
+            # 1) Compute face centroid from the corner + half extents
+            w = dims.get("width",  0.0)  # x‐extent
+            l = dims.get("length", 0.0)  # z‐extent
+            h = dims.get("height", 0.0)  # y‐extent
+
+            cx = loc_raw["x"] + 0.5 * w
+            cy = loc_raw["y"] + 0.5 * h
+            cz = loc_raw["z"] + 0.5 * l
+            plane_point = np.array([cx, cy, cz])
+
+            # 2) Choose a normal based on which dimension was zero
+            #    (length==0 → normal along z; width==0 → normal along x; else y)
+            if abs(dims.get("length", 1)) < 1e-6:
                 normal = np.array([0, 0, 1])
-            elif dims.get("width",1) == 0:
+            elif abs(dims.get("width", 1)) < 1e-6:
                 normal = np.array([1, 0, 0])
-            else:  # height==0
+            else:
                 normal = np.array([0, 1, 0])
-            surfaces.append(("plane", obj, pos, normal))
-        else: 
-            # AABB: center ± half-dims
+
+            surfaces.append(("plane", obj, plane_point, normal))
+
+        else:
+            # Build an AABB around the centroid (JSON loc is already centroid)
+            center = to_vec(loc_raw)
             half = np.array([
-                dims.get("length",0)/2,
-                dims.get("height",0)/2,
-                dims.get("width",0)/2
+                dims.get("length", 0.0) / 2,
+                dims.get("height", 0.0) / 2,
+                dims.get("width",  0.0) / 2
             ])
-            aabb_min = pos - half
-            aabb_max = pos + half
+            aabb_min = center - half
+            aabb_max = center + half
             surfaces.append(("box", obj, aabb_min, aabb_max))
+
+
+            surfaces.append(("plane", obj, plane_point, normal))
+
     return surfaces
 
+# ─── Graph Building Helpers ─────────────────────────────────────────────────
 
 #Add node with attributes
 def add_node(graph, node_id, label, **attrs):
@@ -62,24 +100,15 @@ def add_node(graph, node_id, label, **attrs):
 def unique_id(prefix, i):
     return f"{prefix}_{i}"
 
-def to_vec(point):
-    """
-    Convert a dict with 'x', 'y', 'z' keys into a NumPy 3-vector.
-    """
-    # Extract each coordinate
-    x = point["x"]
-    y = point["y"]
-    z = point["z"]
 
-    # Pack into a NumPy array and return
-    return np.array([x, y, z]) 
+# ─── Main: Build the Spatial Bigraph ─────────────────────────────────────────
 
 #Load JSON file
-with open("Jsons/floor.json", "r") as f:
+path_to_file = "Jsons/floor.json" # Adjust the path as needed
+with open(path_to_file, "r") as f:
     data = json.load(f)
 
 rooms = data["Rooms"] 
-
 
 #Build the Spatial Bigraph using NetworkX
 G = nx.DiGraph() #Directed Graph
@@ -108,25 +137,23 @@ for room_dict in rooms:
                    label = item.get('category', group_name)
             
                 pos = item.get('location') or item.get('position')
-
                 #add node: 
                 add_node(G, node_id, label, position=pos)
                 #add edge
                 G.add_edge(room_name, node_id)
 
         #faltten all objects once: 
-        all_objects = []
-        for items in collections.values():
-            all_objects.extend(items)
-        
+        all_objects = []  # list of (obj_dict, group_name)
         #Collect wall/door/window IDs
         walls_ids   = [o["id"] for o in collections.get("walls",[])]
         door_ids    = [o["id"] for o in collections.get("doors",[])]
         window_ids  = [o["id"] for o in collections.get("windows",[])]
 
-        # build surface list
-        surfaces = build_surfaces(all_objects, walls_ids, door_ids, window_ids)
+        for grp, items in collections.items():
+            all_objects.extend([(o, grp) for o in items])
 
+        # build surface list
+        surfaces = build_surfaces([o for o, _ in all_objects], walls_ids, door_ids, window_ids)
         
         #Add IoT devices as second-level nodes: 
         iot_devs = room_data.get("iot_devices", [])
@@ -140,28 +167,33 @@ for room_dict in rooms:
             #find closest distance to an object -- this is wrong imo cause if it is on a wall it might be closer to the chair in front of it and not to the wall corner. 
             for kind, obj, *params in surfaces:
                 if kind == "plane":
-                    dist = point_to_plane_dist(dev_pos, params[0], params[1])
-                else:
-                    dist = point_to_aabb_dist(dev_pos, params[0], params[1])
+                    plane_pt, normal = params
+                    dist = point_to_plane_dist(dev_pos, plane_pt, normal)
+                else:  # "box"
+                    aabb_min, aabb_max = params
+                    dist = point_to_aabb_dist(dev_pos, aabb_min, aabb_max)
 
                 if dist < closest_dist:
                     closest_dist, closest_obj = dist, obj
 
-            #Add device nodes to the tree
-            # Optionally: ignore if best_dist > some_threshold
+            # Create the IoT node & attach to its nearest object
+            add_node(
+                G, dev_id,
+                label    = dev.get("name", "IoT Device"),
+                position = dev["position"]
+            )
             parent_id = closest_obj.get("id", "<unknown>")
-            add_node(G, dev['id'], label=dev.get('name','IoT Device'), position=dev["position"])
-            G.add_edge(parent_id, dev['id'])
+            G.add_edge(parent_id, dev_id)
 
 
-#Visualize the Spatial Bigraph
+# ─── Visualization: Hierarchical Layout ──────────────────────────────────────
 
 #Define simple tree layout function fro visualization
 def hierarchy_pos(G, root, width=1.0, vert_gap=0.2, vert_loc=0, xcenter=0.5,
                   pos=None, parent=None):
     """
-    If G is a DiGraph that is a tree, return a dict of positions
-    keyed by node, in a top-down hierarchy layout.
+    Compute a top-down tree layout for a DiGraph that is a tree.
+    Returns a dict {node: (x,y), …}.
     """
     if pos is None:
         pos = {root: (xcenter, vert_loc)}
@@ -208,15 +240,3 @@ nx.draw(
 )
 plt.tight_layout()
 plt.show()
-
-
-
-
-
-
-
-
-
-
-
-

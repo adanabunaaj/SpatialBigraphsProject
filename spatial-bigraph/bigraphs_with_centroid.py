@@ -1,11 +1,10 @@
-#not very accurate but try it with a more accurate scan 
 import json 
 import networkx as nx
 from networkx.drawing.nx_pydot import graphviz_layout
 import matplotlib.pyplot as plt
 import numpy as np 
 
-#Helping Functions: 
+# ─────── Helper Functions ────────────────────────────────────────────────────
 
 #Add node with attributes
 def add_node(graph, node_id, label, **attrs):
@@ -17,7 +16,7 @@ def unique_id(prefix, i):
 
 def to_vec(point):
     """
-    Convert a dict with 'x', 'y', 'z' keys into a NumPy 3-vector.
+    Convert a dict with 'x', 'y', 'z' keys into a NumPy 3-vector [x, y, z].]
     """
     # Extract each coordinate
     x = point["x"]
@@ -27,8 +26,11 @@ def to_vec(point):
     # Pack into a NumPy array and return
     return np.array([x, y, z]) 
 
+# ─────── Main Script ─────────────────────────────────────────────────────────
+
 #Load JSON file
-with open("Jsons/kitchenroom.json", "r") as f:
+path_to_file = "Jsons/room1_kitchen_with_iot.json" # Adjust the path as needed
+with open(path_to_file, "r") as f:
     data = json.load(f)
 
 rooms = data["Rooms"] 
@@ -64,13 +66,13 @@ for room_dict in rooms:
 
                 #add node: 
                 add_node(G, node_id, label, position=pos)
-                #add edge
+                #add edge to root
                 G.add_edge(room_name, node_id)
         
         #Add IoT devices as second-level nodes: 
         iot_devs = room_data.get("iot_devices", [])
         for dev in iot_devs:
-            dev_pod = to_vec(dev["position"])
+            dev_pos = to_vec(dev["position"])
             dev_id = dev['id']
             closest_obj = None
             closest_dist = float('inf')
@@ -82,9 +84,26 @@ for room_dict in rooms:
 
             #find closest distance to an object -- this is wrong imo cause if it is on a wall it might be closer to the chair in front of it and not to the wall corner. 
             for obj in all_objects:
-                obj_pos = to_vec(obj.get('location', obj.get('position')))
-                dist = np.linalg.norm(dev_pod - obj_pos)
+                loc = obj.get('location') or obj.get('position')
 
+                if group_name in ("walls", "doors", "windows"):
+                    # JSON gives a corner for these, so we compute centroid
+                    dims = obj.get("dimensions", {})
+                    w = dims.get("width",  0.0)  # extent in x
+                    l = dims.get("length", 0.0)  # extent in z
+                    h = dims.get("height", 0.0)  # extent in y
+
+                    # Centroid = corner + half‐extents
+                    cx = loc["x"] + 0.5 * w
+                    cy = loc["y"] + 0.5 * h
+                    cz = loc["z"] + 0.5 * l
+                    obj_centroid = np.array([cx, cy, cz])
+
+                else:
+                    # For all other objects, JSON loc *is* the centroid
+                    obj_centroid = to_vec(loc)
+
+                dist = np.linalg.norm(dev_pos - obj_centroid) #Euclidean distance from device to object centroid
                 if dist < closest_dist:
                     closest_dist = dist
                     closest_obj = obj
@@ -95,22 +114,22 @@ for room_dict in rooms:
             G.add_edge(parent_id, dev_id)
 
 
-#Visualize the Spatial Bigraph
+# ─────── Visualize the Bigraph ────────────────────────────────────────────────
 
-#Define simple tree layout function fro visualization
 def hierarchy_pos(G, root, width=1.0, vert_gap=0.2, vert_loc=0, xcenter=0.5,
                   pos=None, parent=None):
     """
-    If G is a DiGraph that is a tree, return a dict of positions
-    keyed by node, in a top-down hierarchy layout.
+    Compute positions for a tree layout (top-down).
     """
     if pos is None:
         pos = {root: (xcenter, vert_loc)}
     else:
         pos[root] = (xcenter, vert_loc)
+
     children = list(G.successors(root))
     if not children:
         return pos
+    
     dx = width / len(children)
     nextx = xcenter - width/2 - dx/2
     for child in children:
@@ -122,10 +141,10 @@ def hierarchy_pos(G, root, width=1.0, vert_gap=0.2, vert_loc=0, xcenter=0.5,
         )
     return pos
 
-# Find all root nodes (rooms have in-degree 0)
+# Find roots (rooms have no incoming edges)
 roots = [n for n, d in G.in_degree() if d == 0]
 
-# Build pos dict for one or multiple roots
+# Build a pos dict for each node
 if len(roots) == 1:
     pos = hierarchy_pos(G, roots[0])
 else:
@@ -149,15 +168,3 @@ nx.draw(
 )
 plt.tight_layout()
 plt.show()
-
-
-
-
-
-
-
-
-
-
-
-
