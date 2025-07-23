@@ -5,13 +5,19 @@ A toolkit for constructing, visualizing, and analyzing **spatial bigraphs** from
 ## 📁 Project File Structure
 
 spatial-bigraph/
-├── Figures/ # Generated plots (manually saved here)
-├── Jsons/ # RoomPlan‑app JSON files
-├── imagineRoomBoundary.py 
-├── ImagineRoom.py 
-├── bigraphs_with_centroids.py 
-├── bigraphs_withplanes.py 
-└── README.md 
+    ├── Figures/ # Generated plots (manually saved here)
+
+    ├── Jsons/ # RoomPlan‑app JSON files
+
+    ├── imagineRoomBoundary.py 
+
+    ├── ImagineRoom.py 
+
+    ├── bigraphs_with_centroids.py 
+
+    ├── bigraphs_withplanes.py 
+    
+    └── README.md 
 
 
 ## 🐍 Python Scripts
