@@ -1,0 +1,6 @@
+# requirements.txt for SpatialBigraphsProject
+
+numpy>=1.19.5
+matplotlib>=3.4.2
+networkx>=2.6.3
+shapely>=1.7.1
